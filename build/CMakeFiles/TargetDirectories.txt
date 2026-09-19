@@ -1,0 +1,3 @@
+/Users/burhanuddinmustafa/NeuralNetworkVisualizer/build/CMakeFiles/NeuralVisualizer.dir
+/Users/burhanuddinmustafa/NeuralNetworkVisualizer/build/CMakeFiles/edit_cache.dir
+/Users/burhanuddinmustafa/NeuralNetworkVisualizer/build/CMakeFiles/rebuild_cache.dir

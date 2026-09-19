@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NEURO-DECODE // Phase 3: Volumetric Latent Space</title>
+    <style>
+        :root {
+            --bg-color: #020617;
+            --accent-cyan: #00f0ff;
+            --accent-orange: #ff8800;
+            --accent-purple: #a855f7;
+            --panel-bg: rgba(10, 16, 30, 0.75);
+            --border-color: rgba(0, 240, 255, 0.25);
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            background-color: var(--bg-color);
+            color: #94a3b8;
+            font-family: 'JetBrains Mono', 'Fira Code', 'Roboto Mono', monospace;
+            overflow: hidden;
+            width: 100vw;
+            height: 100vh;
+        }
+
+        #canvas-container { width: 100%; height: 100%; position: absolute; top: 0; left: 0; z-index: 1; }
+
+        .hud-panel {
+            position: absolute;
+            z-index: 10;
+            background: var(--panel-bg);
+            border: 1px solid var(--border-color);
+            backdrop-filter: blur(16px);
+            border-radius: 4px;
+            padding: 16px;
+            pointer-events: none;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+        }
+
+        #header-panel { top: 24px; left: 24px; display: flex; flex-direction: column; gap: 4px; }
+        #header-panel h1 {
+            color: #f8fafc; font-size: 13px; font-weight: 600; letter-spacing: 2px;
+            display: flex; align-items: center; gap: 8px;
+        }
+        #header-panel h1::before {
+            content: ''; display: inline-block; width: 8px; height: 8px;
+            background: var(--accent-cyan); border-radius: 50%; box-shadow: 0 0 8px var(--accent-cyan);
+        }
+        #header-panel p { font-size: 10px; color: #64748b; letter-spacing: 1px; }
+
+        #dsp-panel { top: 24px; right: 24px; width: 280px; }
+        .metric-row { display: flex; justify-content: space-between; font-size: 11px; margin-bottom: 6px; }
+        .metric-value { color: #f8fafc; font-weight: 600; }
+
+        .progress-bar { width: 100%; height: 3px; background: rgba(255,255,255,0.05); margin-bottom: 10px; overflow: hidden; }
+        .progress-fill { height: 100%; background: var(--accent-cyan); width: 0%; transition: width 0.1s ease; }
+
+        #latent-panel { bottom: 24px; right: 24px; width: 280px; }
+        .cluster-tag { display: flex; align-items: center; gap: 8px; font-size: 11px; margin-top: 6px; }
+        .dot { width: 6px; height: 6px; border-radius: 50%; }
+
+        .scanline {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: linear-gradient(to bottom, transparent 50%, rgba(0, 0, 0, 0.25) 51%);
+            background-size: 100% 4px; pointer-events: none; z-index: 20; opacity: 0.4;
+        }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+</head>
+<body>
+    <div class="scanline"></div>
+    <div id="canvas-container"></div>
+
+    <div id="header-panel" class="hud-panel">
+        <h1>NEURO-DECODE // COMPLETE PIPELINE</h1>
+        <p>SPATIAL DSP TO VOLUMETRIC LATENT EMBEDDINGS</p>
+    </div>
+
+    <div id="dsp-panel" class="hud-panel">
+        <div class="metric-row"><span>C3 [LEFT MOTOR] DESYNC</span><span id="c3-val" class="metric-value">18.4 µV²</span></div>
+        <div class="progress-bar"><div id="c3-bar" class="progress-fill"></div></div>
+
+        <div class="metric-row"><span>C4 [RIGHT MOTOR] DESYNC</span><span id="c4-val" class="metric-value">12.1 µV²</span></div>
+        <div class="progress-bar"><div id="c4-bar" class="progress-fill" style="background: var(--accent-orange);"></div></div>
+
+        <div class="metric-row"><span>CLASSIFICATION CONFIDENCE</span><span id="conf-val" class="metric-value">94.8%</span></div>
+        <div class="progress-bar"><div id="conf-bar" class="progress-fill" style="background: var(--accent-orange);"></div></div>
+    </div>
+
+    <div id="latent-panel" class="hud-panel">
+        <div class="metric-row"><span>3D LATENT EMBEDDING SPACE</span><span class="metric-value">3-CLASS</span></div>
+        <div class="cluster-tag"><div class="dot" style="background: #00f0ff;"></div> Motor Imagery: Left Hand</div>
+        <div class="cluster-tag"><div class="dot" style="background: #ff8800;"></div> Motor Imagery: Right Hand</div>
+        <div class="cluster-tag"><div class="dot" style="background: #a855f7;"></div> Resting State</div>
+    </div>
+
+    <script>
+        // 1. Scene Setup
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.fog = new THREE.FogExp2(0x020617, 0.05);
+
+        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(0, 1.8, 6.2);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        container.appendChild(renderer.domElement);
+
+        const controls = new THREE.OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.05;
+
+        // 2. Anatomical Head Wireframe
+        const headGroup = new THREE.Group();
+        headGroup.position.set(-2.2, 0, 0);
+        scene.add(headGroup);
+
+        const headGeo = new THREE.IcosahedronGeometry(1.1, 3);
+        headGeo.scale(0.85, 1.15, 0.95);
+
+        const headMat = new THREE.MeshBasicMaterial({ color: 0x00f0ff, wireframe: true, transparent: true, opacity: 0.08 });
+        headGroup.add(new THREE.Mesh(headGeo, headMat));
+
+        const headPoints = new THREE.Points(headGeo, new THREE.PointsMaterial({ color: 0x00f0ff, size: 0.012, transparent: true, opacity: 0.25 }));
+        headGroup.add(headPoints);
+
+        const electrodes = [
+            { name: "C3", pos: new THREE.Vector3(-0.72, 0.5, 0.0), active: true },
+            { name: "C4", pos: new THREE.Vector3(0.72, 0.5, 0.0), active: true },
+            { name: "Cz", pos: new THREE.Vector3(0.0, 0.95, 0.0), active: true }
+        ];
+
+        const nodeRings = [];
+        electrodes.forEach(el => {
+            const group = new THREE.Group();
+            group.position.copy(el.pos);
+
+            group.add(new THREE.Mesh(new THREE.SphereGeometry(0.025, 12, 12), new THREE.MeshBasicMaterial({ color: 0x00f0ff })));
+            const ring = new THREE.Mesh(new THREE.RingGeometry(0.04, 0.05, 24), new THREE.MeshBasicMaterial({ color: 0x00f0ff, side: THREE.DoubleSide, transparent: true, opacity: 0.7 }));
+            ring.rotation.x = Math.PI / 2;
+            group.add(ring);
+
+            headGroup.add(group);
+            nodeRings.push({ ring, pos: el.pos });
+        });
+
+        // 3. Central Processor Node
+        const processorNode = new THREE.Group();
+        processorNode.position.set(0, 0, 0);
+        scene.add(processorNode);
+
+        const procCoreMat = new THREE.MeshBasicMaterial({ color: 0x00f0ff, wireframe: true, transparent: true, opacity: 0.35 });
+        processorNode.add(new THREE.Mesh(new THREE.IcosahedronGeometry(0.3, 1), procCoreMat));
+
+        // 4. Particle Streams (Phase 2)
+        const numParticles = 180;
+        const particleCurves = [];
+
+        nodeRings.forEach(n => {
+            const worldStart = n.pos.clone().add(headGroup.position);
+            const worldEnd = processorNode.position;
+            const midP = new THREE.Vector3().addVectors(worldStart, worldEnd).multiplyScalar(0.5);
+            midP.y += 0.4;
+            const curve = new THREE.QuadraticBezierCurve3(worldStart, midP, worldEnd);
+            particleCurves.push(curve);
+
+            const lineGeo = new THREE.BufferGeometry().setFromPoints(curve.getPoints(30));
+            scene.add(new THREE.Line(lineGeo, new THREE.LineBasicMaterial({ color: 0x00f0ff, transparent: true, opacity: 0.12 })));
+        });
+
+        const particleGeo = new THREE.BufferGeometry();
+        const particlePositions = new Float32Array(numParticles * 3);
+        const particleProgress = new Float32Array(numParticles);
+        const particleSpeeds = new Float32Array(numParticles);
+        const particleCurveAssigned = new Int16Array(numParticles);
+
+        for (let i = 0; i < numParticles; i++) {
+            particleProgress[i] = Math.random();
+            particleSpeeds[i] = 0.005 + Math.random() * 0.008;
+            particleCurveAssigned[i] = Math.floor(Math.random() * particleCurves.length);
+        }
+
+        particleGeo.setAttribute('position', new THREE.BufferAttribute(particlePositions, 3));
+        const particleSystem = new THREE.Points(particleGeo, new THREE.PointsMaterial({ color: 0x00f0ff, size: 0.03, transparent: true, opacity: 0.8 }));
+        scene.add(particleSystem);
+
+        // 5. Phase 3: Volumetric Latent Space Box
+        const latentGroup = new THREE.Group();
+        latentGroup.position.set(2.2, 0, 0);
+        scene.add(latentGroup);
+
+        const boxGeo = new THREE.BoxGeometry(1.6, 1.6, 1.6);
+        const boxMat = new THREE.MeshBasicMaterial({ color: 0x1e293b, wireframe: true, transparent: true, opacity: 0.3 });
+        latentGroup.add(new THREE.Mesh(boxGeo, boxMat));
+
+        const gridHelper = new THREE.GridHelper(1.6, 6, 0x00f0ff, 0x1e293b);
+        gridHelper.position.y = -0.8;
+        latentGroup.add(gridHelper);
+
+        // Cluster Spheres
+        const clusters = [
+            { pos: new THREE.Vector3(-0.4, 0.3, -0.3), color: 0x00f0ff, mesh: null },  // Left Hand
+            { pos: new THREE.Vector3(0.5, -0.2, 0.4), color: 0xff8800, mesh: null },   // Right Hand
+            { pos: new THREE.Vector3(0.0, -0.5, -0.4), color: 0xa855f7, mesh: null }   // Rest
+        ];
+
+        clusters.forEach((c, idx) => {
+            const cGeo = new THREE.SphereGeometry(0.2, 16, 16);
+            const cMat = new THREE.MeshBasicMaterial({ color: c.color, transparent: true, opacity: 0.15, wireframe: true });
+            const mesh = new THREE.Mesh(cGeo, cMat);
+            mesh.position.copy(c.pos);
+            latentGroup.add(mesh);
+            clusters[idx].mesh = mesh;
+        });
+
+        // Decision Marker with Path History
+        const decisionMesh = new THREE.Mesh(new THREE.SphereGeometry(0.04, 12, 12), new THREE.MeshBasicMaterial({ color: 0xff8800 }));
+        latentGroup.add(decisionMesh);
+
+        // Latent Stream Conduit
+        const streamCurve = new THREE.LineDashedMaterial({ color: 0x00f0ff, dashSize: 0.05, gapSize: 0.05, transparent: true, opacity: 0.3 });
+        const streamGeo = new THREE.BufferGeometry().setFromPoints([processorNode.position, latentGroup.position]);
+        const streamLine = new THREE.Line(streamGeo, streamCurve);
+        streamLine.computeLineDistances();
+        scene.add(streamLine);
+
+        // 6. Animation Loop
+        const clock = new THREE.Clock();
+
+        function animate() {
+            requestAnimationFrame(animate);
+            const t = clock.getElapsedTime();
+
+            headGroup.rotation.y = Math.sin(t * 0.2) * 0.1;
+            processorNode.rotation.y = t * 0.4;
+            latentGroup.rotation.y = t * 0.08;
+
+            // Electrode Pulses
+            nodeRings.forEach((n, idx) => {
+                const scale = 1.0 + Math.sin(t * 4.0 + idx) * 0.3;
+                n.ring.scale.set(scale, scale, scale);
+            });
+
+            // Particles
+            const posAttr = particleGeo.attributes.position;
+            for (let i = 0; i < numParticles; i++) {
+                particleProgress[i] += particleSpeeds[i];
+                if (particleProgress[i] > 1.0) particleProgress[i] = 0.0;
+                const pt = particleCurves[particleCurveAssigned[i]].getPoint(particleProgress[i]);
+                posAttr.setXYZ(i, pt.x, pt.y, pt.z);
+            }
+            posAttr.needsUpdate = true;
+
+            // Drifting Decision Point in Latent Space
+            const targetCluster = clusters[1].pos; // Targeting Right Hand
+            const driftX = Math.sin(t * 1.8) * 0.06;
+            const driftY = Math.cos(t * 2.2) * 0.06;
+            decisionMesh.position.set(targetCluster.x + driftX, targetCluster.y + driftY, targetCluster.z + Math.sin(t) * 0.04);
+
+            // Cluster Pulse effect on target
+            clusters[1].mesh.scale.setScalar(1.0 + Math.sin(t * 3.0) * 0.15);
+
+            // Telemetry updates
+            const c3Val = (16.0 + Math.sin(t * 2.8) * 4.0).toFixed(1);
+            const c4Val = (11.0 + Math.cos(t * 2.0) * 3.0).toFixed(1);
+            const confVal = (92.0 + Math.sin(t * 1.5) * 5.0).toFixed(1);
+
+            document.getElementById('c3-val').innerText = `${c3Val} µV²`;
+            document.getElementById('c3-bar').style.width = `${(c3Val / 25.0) * 100}%`;
+            document.getElementById('c4-val').innerText = `${c4Val} µV²`;
+            document.getElementById('c4-bar').style.width = `${(c4Val / 25.0) * 100}%`;
+            document.getElementById('conf-val').innerText = `${confVal}%`;
+            document.getElementById('conf-bar').style.width = `${confVal}%`;
+
+            controls.update();
+            renderer.render(scene, camera);
+        }
+
+        animate();
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+</body>
+</html>
